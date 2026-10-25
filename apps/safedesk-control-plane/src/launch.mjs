@@ -54,21 +54,24 @@ export class Launcher {
     const logPath = join(this.stateDir, `${sandbox.id}.log`);
     const stream = createWriteStream(logPath, { flags: 'a' });
     const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout.pipe(stream);
-    child.stderr.pipe(stream);
+    child.stdout.pipe(stream, { end: false });
+    child.stderr.pipe(stream, { end: false });
+    child.once('close', () => stream.end());
+    child.on('error', (error) => { child.launchError = error; });
+    stream.on('error', (error) => { child.launchError = error; child.kill('SIGKILL'); });
     this._procs.set(sandbox.id, child);
     return { mode, pid: child.pid, logPath, startedAt: new Date().toISOString(), command: argv[0] };
   }
 
   _alive(child) {
-    return child.exitCode === null && child.signalCode === null;
+    return !child.launchError && child.exitCode === null && child.signalCode === null;
   }
 
   info(sandboxId) {
     const child = this._procs.get(sandboxId);
     if (!child) return { alive: false };
     const alive = this._alive(child);
-    return { alive, pid: child.pid, exitCode: alive ? null : (child.exitCode ?? child.signalCode) };
+    return { alive, pid: child.pid, exitCode: alive ? null : (child.exitCode ?? child.signalCode ?? 127) };
   }
 
   isAlive(sandboxId) {
@@ -127,12 +130,25 @@ export class Launcher {
     const child = this._procs.get(sandboxId);
     if (!child) return false;
     if (this._alive(child)) {
+      child.kill('SIGCONT');
       child.kill('SIGTERM');
       setTimeout(() => {
         if (this._alive(child)) child.kill('SIGKILL');
       }, timeoutMs).unref();
     }
     return true;
+  }
+
+  async stopAndWait(sandboxId, timeoutMs = 5000) {
+    const child = this._procs.get(sandboxId);
+    if (!child) return false;
+    this.stop(sandboxId, timeoutMs);
+    if (!this._alive(child)) return true;
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); child.removeListener('exit', done); resolve(!this._alive(child)); };
+      const timer = setTimeout(done, timeoutMs + 1000);
+      child.once('exit', done);
+    });
   }
 
   reapOrphans(liveIds) {

@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, rename } from 'node:fs/promises';
 import { join, normalize, extname, dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { allowedAgents, compileManifest, policies } from './src/policy.mjs';
@@ -11,6 +11,9 @@ import { EgressPolicy, ProxyRuntime, serve as serveProxy } from './src/proxy.mjs
 import { aliasProfile } from './src/privacy.mjs';
 import { TravelerRegistry } from './src/travelers.mjs';
 import { defaultSettings, defaultTemplates, catalog, enrichSandbox, filterEvents, filterSandboxes, mergeSettings, overview as productOverview, riskFor } from './src/product.mjs';
+import { activeStates, terminalStates, Scheduler, stateLock, validateLimits, withPositions } from './src/scheduler.mjs';
+
+const withStateLock = stateLock();
 
 const PORT = Number(process.env.PORT ?? 8022);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -42,11 +45,16 @@ async function ensureStore() {
 
 async function loadSandboxes() {
   await ensureStore();
-  return JSON.parse(await readFile(dataFile, 'utf8'));
+  return withPositions(JSON.parse(await readFile(dataFile, 'utf8')));
 }
 
 async function saveSandboxes(items) {
-  await writeFile(dataFile, JSON.stringify(items, null, 2) + '\n');
+  await atomicJson(dataFile, items.map(({ queuePosition, ...s }) => s));
+}
+
+async function atomicJson(path, value) {
+  await writeFile(`${path}.tmp`, `${JSON.stringify(value, null, 2)}\n`);
+  await rename(`${path}.tmp`, path);
 }
 
 async function loadSettings() {
@@ -61,8 +69,9 @@ async function loadSettings() {
 }
 
 async function saveSettings(input) {
-  const settings = mergeSettings(input);
-  await writeFile(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+  const settings = mergeSettings({ ...await loadSettings(), ...input });
+  validateLimits(settings);
+  await atomicJson(settingsFile, settings);
   return settings;
 }
 
@@ -102,6 +111,39 @@ function ensureProxy() {
 function policyKey(sandbox) {
   const key = String(sandbox.policyId || 'balanced');
   return policies[key] ? key : 'balanced';
+}
+
+async function startSandbox(sandbox) {
+  const settings = await loadSettings();
+  if (!workspaceAllowed(sandbox.workspace, settings.workspaceRoots || [])) throw new Error('工作区不在允许的根目录内');
+  const manifest = compileManifest(sandbox);
+  if (policies[policyKey(sandbox)].networkMode !== 'disabled') {
+    if (!(await ensureProxy())) throw new Error('外联代理启动失败');
+    const token = randomBytes(12).toString('hex');
+    sandbox.egressToken = token;
+    const allowed = new Set();
+    const injections = {};
+    for (const capability of sandbox.credentials || []) {
+      const item = await broker.get(capability);
+      if (item) {
+        for (const hostName of item.allowedHosts || []) allowed.add(hostName);
+        const placeholder = (sandbox.credentialPlaceholders || {})[capability];
+        if (placeholder) injections[placeholder] = { value: item.value, hosts: item.allowedHosts };
+      }
+    }
+    Object.assign(injections, await travelers.resolveInjections(sandbox));
+    const alias = sandbox.privacyCurtain ? aliasProfile(sandbox.id) : null;
+    proxyRuntime.register(sandbox.id, token, new EgressPolicy([...allowed], injections, alias));
+    manifest.egress = { token };
+  }
+  return launcher.start(sandbox, manifest);
+}
+
+const scheduler = new Scheduler(launcher, startSandbox, (id) => proxyRuntime.unregister(id), event);
+
+async function scheduleOnce() {
+  const items = await loadSandboxes();
+  if (await scheduler.tick(items, await loadSettings())) await saveSandboxes(items);
 }
 
 function safeName(name) {
@@ -363,10 +405,7 @@ async function api(req, res, url) {
     if (unknownTravelers.length) return json(res, 400, { error: `未知出行人卡片：${unknownTravelers.join(',')}` });
     sandbox.travelerPlaceholders = travelers.issuePlaceholders(sandbox);
     sandbox.credentialPlaceholders = broker.issuePlaceholders(sandbox);
-    const settings = await loadSettings();
     const sandboxes = await loadSandboxes();
-    const running = sandboxes.filter((item) => ['running', 'paused', 'pending_approval'].includes(item.status) && (user.role === 'admin' || item.ownerId === user.id)).length;
-    if (user.role !== 'admin' && running >= Number(settings.maxConcurrent || 8)) return json(res, 409, { error: '已达到并发沙箱上限' });
     sandboxes.unshift(sandbox);
     await saveSandboxes(sandboxes);
     event('info', '创建待审批沙箱', `${sandbox.name} 使用 ${policies[policyId].label} 策略`, user.id);
@@ -376,7 +415,9 @@ async function api(req, res, url) {
     if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
     let input;
     try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }
-    const settings = await saveSettings(input);
+    let settings;
+    try { settings = await saveSettings(input); } catch (error) { return json(res, 400, { error: error.message }); }
+    await scheduleOnce();
     event('info', '更新组织设置', `${settings.orgName} 已保存并发上限 ${settings.maxConcurrent}`, user.id);
     return json(res, 200, { settings });
   }
@@ -398,37 +439,11 @@ async function api(req, res, url) {
     try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }
     if (action === 'approve') {
       if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
-      const manifest = compileManifest(sandbox);
-      let runtimeInfo;
       try {
-        if (policies[policyKey(sandbox)].networkMode !== 'disabled') {
-          if (!(await ensureProxy())) throw new Error('外联代理启动失败');
-          const token = randomBytes(12).toString('hex');
-          sandbox.egressToken = token;
-          const allowed = new Set();
-          const injections = {};
-          for (const capability of sandbox.credentials || []) {
-            const item = await broker.get(capability);
-            if (item) {
-              for (const hostName of item.allowedHosts || []) allowed.add(hostName);
-              const placeholder = (sandbox.credentialPlaceholders || {})[capability];
-              if (placeholder) injections[placeholder] = { value: item.value, hosts: item.allowedHosts };
-            }
-          }
-          Object.assign(injections, await travelers.resolveInjections(sandbox));
-          const alias = sandbox.privacyCurtain ? aliasProfile(id) : null;
-          proxyRuntime.register(id, token, new EgressPolicy([...allowed], injections, alias));
-          manifest.egress = { token };
-        }
-        runtimeInfo = launcher.start(sandbox, manifest);
+        scheduler.enqueue(sandboxes, sandbox, await loadSettings(), user.id);
       } catch (error) {
-        proxyRuntime.unregister(id);
-        event('block', '启动失败', `${sandbox.name} 拉起失败：${error.message}`, user.id);
-        return json(res, 502, { error: `启动沙箱失败：${error.message}` });
+        return json(res, 409, { error: error.message });
       }
-      sandbox.status = 'running'; sandbox.startedAt = new Date().toISOString(); sandbox.approvedBy = user.id;
-      sandbox.runtime = runtimeInfo;
-      event('allow', '人工审批', `${sandbox.name} 已启动（${runtimeInfo.mode} 模式）；凭据仅由主机 Broker 按策略代签`, user.id);
     }
     if (action === 'reject') {
       if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
@@ -438,27 +453,31 @@ async function api(req, res, url) {
     }
     if (action === 'pause') {
       if (sandbox.status !== 'running') return json(res, 409, { error: '仅运行中的沙箱可以暂停' });
-      launcher.pause(id);
+      if (!launcher.pause(id)) return json(res, 409, { error: '进程状态待确认，请核对执行器' });
       proxyRuntime.setPaused(id, true);
       sandbox.status = 'paused'; sandbox.pausedAt = new Date().toISOString(); sandbox.pausedBy = user.id;
       event('info', '暂停沙箱', `${sandbox.name} 已暂停，外联和会话凭据冻结`, user.id);
     }
     if (action === 'resume') {
       if (sandbox.status !== 'paused') return json(res, 409, { error: '仅暂停中的沙箱可以恢复' });
-      launcher.resume(id);
+      if (!launcher.resume(id)) return json(res, 409, { error: '进程状态待确认，请核对执行器' });
       proxyRuntime.setPaused(id, false);
       sandbox.status = 'running'; sandbox.resumedAt = new Date().toISOString(); sandbox.resumedBy = user.id;
       event('allow', '恢复沙箱', `${sandbox.name} 已恢复运行`, user.id);
     }
     if (action === 'terminate') {
-      if (sandbox.status === 'terminated') return json(res, 409, { error: '沙箱已终止' });
-      launcher.stop(id);
+      if (terminalStates.has(sandbox.status)) return json(res, 409, { error: '沙箱已结束' });
+      if (activeStates.has(sandbox.status) && !(await launcher.stopAndWait(id))) return json(res, 409, { error: '进程状态待确认，请核对执行器' });
       proxyRuntime.unregister(id);
+      delete sandbox.egressToken;
       sandbox.status = 'terminated'; sandbox.terminatedAt = new Date().toISOString(); sandbox.terminatedBy = user.id;
       event('block', '终止沙箱', `${sandbox.name} 已终止，短期会话凭据失效`, user.id);
     }
+    await scheduler.tick(sandboxes, await loadSettings());
     await saveSandboxes(sandboxes);
-    return json(res, 200, { sandbox: enrichSandbox(sandbox) });
+    const result = withPositions(sandboxes).find((s) => s.id === id);
+    const status = result.status === 'queued' ? 202 : action === 'approve' && result.status === 'failed' ? 502 : 200;
+    return json(res, status, { sandbox: enrichSandbox(result) });
   }
   return json(res, 404, { error: 'Not found' });
 }
@@ -467,7 +486,12 @@ const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    if (url.pathname.startsWith('/api/')) {
+      if (/^\/api\/(sandboxes|settings|bootstrap|overview)(\/|$)/.test(url.pathname)) {
+        return await withStateLock(() => api(req, res, url));
+      }
+      return await api(req, res, url);
+    }
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     const target = normalize(join(staticRoot, requested));
     if (!target.startsWith(staticRoot)) return json(res, 403, { error: 'Forbidden' });
@@ -479,7 +503,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, async () => {
+await withStateLock(async () => {
   const settings = await loadSettings();
   auditLog.retentionDays = Number(settings.retainAuditDays || 30);
   const existing = await auditLog.load();
@@ -487,5 +511,16 @@ server.listen(PORT, HOST, async () => {
     for (const seed of securityEvents) await auditLog.append(seed);
   }
   await auditLog.prune();
+  await scheduleOnce();
+});
+
+let ticking = false;
+setInterval(() => {
+  if (ticking) return;
+  ticking = true;
+  withStateLock(scheduleOnce).catch((error) => console.error('scheduler:', error.message)).finally(() => { ticking = false; });
+}, 500).unref();
+
+server.listen(PORT, HOST, () => {
   console.log(`SafeDesk control plane listening on http://${HOST}:${PORT}`);
 });

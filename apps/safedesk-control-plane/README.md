@@ -53,3 +53,8 @@ node --test test/*.test.mjs
 ```
 
 底层隔离运行时说明见 [docs/safedesk/RUNTIME.md](../../docs/safedesk/RUNTIME.md)。
+
+组织级并发上限默认 8（暂停任务保留名额），管理员也遵守；审批通过后按 FIFO
+排队，默认最多排队 100 项。待审批任务不占运行名额。设置、状态转换、重启
+恢复及回滚规则见[并发与排队设计](../../docs/safedesk/CONCURRENCY-QUEUE.md)，
+执行命令和用例结果见[测试记录](../../docs/safedesk/CONCURRENCY-QUEUE-TESTS.md)。

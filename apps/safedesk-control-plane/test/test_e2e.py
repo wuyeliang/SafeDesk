@@ -6,7 +6,7 @@ E2E-03  wechat QR flow (start -> poll pending -> confirm -> poll confirmed)
 E2E-04  unauthenticated requests -> 401; logout -> 401 afterwards
 E2E-05  per-user data isolation vs admin-wide visibility
 E2E-06  full sandbox lifecycle: create -> approve -> pause -> resume -> terminate
-E2E-07  concurrent sandbox quota -> 409 once maxConcurrent reached
+E2E-07  global runtime quota -> approved tasks queue and automatically fill freed slots
 E2E-08  credential broker: masked listing, manifest/data file never leak secrets
 E2E-09  egress proxy: auth, SSRF guard, allowlist, pause freeze
 E2E-10  audit history persistence (audit.jsonl + history query + non-admin 403)
@@ -458,7 +458,7 @@ class TestE2E06Lifecycle(E2EBase):
 
 
 class TestE2E07Quota(E2EBase):
-    """E2E-07: maxConcurrent quota blocks extra live sandboxes with 409."""
+    """E2E-07: approval queues work for all users, including administrators."""
 
     def test_e2e_07(self):
         _, admin = self.admin_login()
@@ -475,19 +475,25 @@ class TestE2E07Quota(E2EBase):
             status, first = self.create_sandbox(user, name="quota-one")
             self.assertEqual(status, 201)
             status, second = self.create_sandbox(user, name="quota-two")
-            self.assertEqual(status, 409, "超额创建必须 409")
-            self.assertIn("上限", second["error"])
-
-            # 管理员不受配额限制
-            status, _ = self.create_sandbox(admin_token, name="quota-admin")
             self.assertEqual(status, 201)
-
-            # 终止后配额释放
-            sandbox_id = first["sandbox"]["id"]
-            status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/terminate", token=user)
+            first_id, second_id = first["sandbox"]["id"], second["sandbox"]["id"]
+            status, started = self.request("POST", f"/api/sandboxes/{first_id}/approve", token=admin_token)
             self.assertEqual(status, 200)
-            status, _ = self.create_sandbox(user, name="quota-three")
-            self.assertEqual(status, 201, "终止后应恢复可创建")
+            self.assertEqual(started["sandbox"]["status"], "running")
+            status, waiting = self.request("POST", f"/api/sandboxes/{second_id}/approve", token=admin_token)
+            self.assertEqual(status, 202)
+            self.assertEqual(waiting["sandbox"]["queuePosition"], 1)
+
+            status, third = self.create_sandbox(admin_token, name="quota-admin")
+            self.assertEqual(status, 201)
+            status, waiting = self.request("POST", f"/api/sandboxes/{third['sandbox']['id']}/approve", token=admin_token)
+            self.assertEqual(status, 202)
+            self.assertEqual(waiting["sandbox"]["queuePosition"], 2)
+
+            status, _ = self.request("POST", f"/api/sandboxes/{first_id}/terminate", token=user)
+            self.assertEqual(status, 200)
+            _, running = self.request("GET", f"/api/sandboxes/{second_id}", token=user)
+            self.assertEqual(running["sandbox"]["status"], "running")
         finally:
             self.request("POST", "/api/settings", saved, token=admin_token)
 
@@ -1047,10 +1053,10 @@ class TestE2E20RestartContinuity(E2EBase):
         _, settings = self.request("GET", "/api/settings", token=relogin["token"])
         self.assertEqual(settings["settings"]["orgName"], "重启验证组织")
 
-        # 重启后生命周期仍可操作（终止留存的沙箱清理现场）
-        status, terminated = self.request("POST", f"/api/sandboxes/{sandbox_id}/terminate", token=user_token)
-        self.assertEqual(status, 200)
-        self.assertEqual(terminated["sandbox"]["status"], "terminated")
+        # 新 Launcher 无法确认旧进程归属，不能释放配额或盲目信任磁盘 PID。
+        status, result = self.request("POST", f"/api/sandboxes/{sandbox_id}/terminate", token=user_token)
+        self.assertEqual(status, 409)
+        self.assertIn("进程状态待确认", result["error"])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@ import { allowedAgents, policies } from './policy.mjs';
 
 export const statusLabels = {
   pending_approval: '待审批',
+  queued: '排队中',
+  completed: '已完成',
+  failed: '失败',
   running: '运行中',
   paused: '已暂停',
   rejected: '已拒绝',
@@ -15,6 +18,7 @@ export const defaultSettings = {
   orgName: 'SafeDesk 安全运营中心',
   requireApproval: true,
   maxConcurrent: 8,
+  maxQueued: 100,
   sessionTimeoutMin: 240,
   allowPhoneLogin: true,
   allowWechatLogin: true,
@@ -149,6 +153,9 @@ export function overview(items, events, user) {
     total: items.length,
     running: items.filter((item) => item.status === 'running').length,
     pendingApproval: items.filter((item) => item.status === 'pending_approval').length,
+    queued: items.filter((item) => item.status === 'queued').length,
+    completed: items.filter((item) => item.status === 'completed').length,
+    failed: items.filter((item) => item.status === 'failed').length,
     paused: items.filter((item) => item.status === 'paused').length,
     rejected: items.filter((item) => item.status === 'rejected').length,
     terminated: items.filter((item) => item.status === 'terminated').length,

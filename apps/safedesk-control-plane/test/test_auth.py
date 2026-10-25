@@ -251,7 +251,7 @@ class AuthApiTest(unittest.TestCase):
         status, _ = self.request("POST", f"/api/sandboxes/{created['sandbox']['id']}/reject", {"reason": "x"}, verify["token"])
         self.assertEqual(status, 403)
 
-    def test_user_concurrent_cap(self):
+    def test_pending_tasks_do_not_consume_concurrency(self):
         _, login = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
         self.request("POST", "/api/settings", {"maxConcurrent": 1}, login["token"])
         _, sent = self.request("POST", "/api/auth/phone/send", {"phone": "13700000003"})
@@ -269,7 +269,7 @@ class AuthApiTest(unittest.TestCase):
             "policyId": "review",
             "workspace": "/tmp/cap-two",
         }, verify["token"])
-        self.assertEqual(status, 409)
+        self.assertEqual(status, 201)
 
     def test_admin_can_see_other_users_sandbox(self):
         _, sent = self.request("POST", "/api/auth/phone/send", {"phone": "13700000004"})

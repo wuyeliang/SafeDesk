@@ -102,6 +102,7 @@ class Launcher:
                 log.close()
                 raise ValueError(f"启动沙箱失败：{error}") from error
             self._procs[sandbox["id"]] = proc
+            log.close()
             return {
                 "mode": mode, "pid": proc.pid, "logPath": str(log_path), "startedAt": iso_now(),
                 "command": cmd[0],
@@ -160,6 +161,7 @@ class Launcher:
         if not proc:
             return False
         if proc.poll() is None:
+            proc.send_signal(signal.SIGCONT)
             proc.terminate()
             try:
                 proc.wait(timeout=timeout)

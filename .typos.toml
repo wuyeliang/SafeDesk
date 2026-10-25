@@ -48,6 +48,8 @@ existant = "existant"
 fourty = "fourty"
 # Scene ID
 tne = "tne"
+# MSVC output-file switch used by the C API example runner.
+Fo = "Fo"
 
 [default.extend-identifiers]
 as_slice_arbitary = "as_slice_arbitary"

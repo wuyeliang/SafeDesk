@@ -110,6 +110,7 @@
       <div class="metric"><small>沙箱总数</small><strong id="mTotal">0</strong><span>可追踪资产</span></div>
       <div class="metric"><small>运行中</small><strong id="mRunning">0</strong><span>当前活跃会话</span></div>
       <div class="metric"><small>待审批</small><strong id="mPending">0</strong><span>需要管理员处理</span></div>
+      <div class="metric"><small>排队中</small><strong id="mQueued">0</strong><span>等待运行名额</span></div>
       <div class="metric"><small>安全拦截</small><strong id="mBlocked">0</strong><span>审计事件</span></div>
       <div class="metric"><small>活跃用户</small><strong id="mUsers">0</strong><span>租户隔离</span></div>
       <div class="metric"><small>系统状态</small><strong id="mHealth">正常</strong><span id="mAudit">审计流正常</span></div>
@@ -144,6 +145,9 @@
         <select id="statusFilter">
           <option value="">全部状态</option>
           <option value="pending_approval">待审批</option>
+          <option value="queued">排队中</option>
+          <option value="completed">已完成</option>
+          <option value="failed">失败</option>
           <option value="running">运行中</option>
           <option value="paused">已暂停</option>
           <option value="rejected">已拒绝</option>
@@ -175,7 +179,8 @@
       <div id="settingsPanel" class="hidden">
         <h2>组织设置</h2>
         <label>组织名称</label><input id="orgName" />
-        <label>并发上限</label><input id="maxConcurrent" type="number" min="1" max="64" />
+        <label>组织运行上限（含暂停任务）</label><input id="maxConcurrent" type="number" min="1" max="64" />
+        <label>已审批任务排队上限</label><input id="maxQueued" type="number" min="1" max="10000" />
         <label>会话超时（分钟）</label><input id="sessionTimeoutMin" type="number" min="30" max="1440" />
         <label>安全公告</label><input id="notice" />
         <div style="margin-top:12px"><button id="saveSettings">保存设置</button></div>
@@ -284,6 +289,7 @@
       $('mTotal').textContent = overview.total ?? 0;
       $('mRunning').textContent = overview.running ?? 0;
       $('mPending').textContent = overview.pendingApproval ?? 0;
+      $('mQueued').textContent = overview.queued ?? 0;
       $('mBlocked').textContent = overview.blockedEvents ?? 0;
       $('mUsers').textContent = overview.activeUsers ?? 0;
       $('mHealth').textContent = overview.health === 'attention' ? '待处理' : '正常';
@@ -311,9 +317,11 @@
           admin && s.status === 'pending_approval' ? `<button class="ghost" data-reject="${s.id}">拒绝</button>` : '',
           s.status === 'running' ? `<button class="ghost" data-pause="${s.id}">暂停</button>` : '',
           s.status === 'paused' ? `<button data-resume="${s.id}">恢复</button>` : '',
-          s.status !== 'terminated' && s.status !== 'rejected' ? `<button class="danger" data-stop="${s.id}">终止</button>` : '',
+          !['terminated', 'rejected', 'completed', 'failed'].includes(s.status) ? `<button class="danger" data-stop="${s.id}">${s.status === 'queued' ? '取消排队' : '终止'}</button>` : '',
         ].filter(Boolean).join('');
-        const curtain = s.privacyCurtain ? ' · 隐私帘开' : '';
+        const position = s.status === 'queued' && Number.isInteger(s.queuePosition) ? ` · 排队第 ${s.queuePosition} 位` : '';
+        const recovery = s.runtime?.recoveryRequired ? ' · 运行状态需运维核对' : '';
+        const curtain = (s.privacyCurtain ? ' · 隐私帘开' : '') + position + recovery;
         return `<div class="card"><strong>${s.name}</strong> · ${s.agentLabel || s.agent}${s.ownerName ? ' · ' + s.ownerName : ''} <span class="risk ${s.risk || ''}">${s.risk || ''}</span><div class="status ${s.status}">${s.statusLabel || s.status}${curtain}</div><small>${s.workspace}${s.purpose ? ' · ' + s.purpose : ''}</small><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${actions}</div></div>`;
       }).join('') || '<p>没有匹配的沙箱</p>';
     }
@@ -368,6 +376,7 @@
       if (data.settings) {
         $('orgName').value = data.settings.orgName || '';
         $('maxConcurrent').value = data.settings.maxConcurrent || 8;
+        $('maxQueued').value = data.settings.maxQueued || 100;
         $('sessionTimeoutMin').value = data.settings.sessionTimeoutMin || 240;
         $('notice').value = data.settings.notice || '';
       }
@@ -519,7 +528,7 @@
     $('reload').onclick = bootstrap;
     $('saveSettings').onclick = async () => {
       try {
-        await api('/api/settings', { method:'POST', body: JSON.stringify({ orgName:$('orgName').value, maxConcurrent:Number($('maxConcurrent').value), sessionTimeoutMin:Number($('sessionTimeoutMin').value), notice:$('notice').value }) });
+        await api('/api/settings', { method:'POST', body: JSON.stringify({ orgName:$('orgName').value, maxConcurrent:Number($('maxConcurrent').value), maxQueued:Number($('maxQueued').value), sessionTimeoutMin:Number($('sessionTimeoutMin').value), notice:$('notice').value }) });
         await bootstrap();
       } catch (error) { alert(error.message); }
     };
@@ -610,6 +619,18 @@
       if (!token()) { showApp(false); return; }
       try { await bootstrap(); } catch { showApp(false); }
     }
+    let refreshingTasks = false;
+    setInterval(async () => {
+      if (!currentUser || document.hidden || refreshingTasks) return;
+      refreshingTasks = true;
+      try {
+        const [list, metrics] = await Promise.all([api('/api/sandboxes'), api('/api/overview')]);
+        allSandboxes = list.sandboxes || [];
+        renderList(allSandboxes);
+        renderMetrics(metrics.overview);
+      } catch (error) { console.warn('任务状态刷新失败', error.message); }
+      finally { refreshingTasks = false; }
+    }, 5000);
     restore();
   </script>
 </body>

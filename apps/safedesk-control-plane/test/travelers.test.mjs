@@ -17,13 +17,16 @@ const CARD = {
 
 const makeSandbox = (id = 'sbx-trip01', overrides = {}) => ({ id, travelerCards: ['traveller-li'], status: 'running', ...overrides });
 
-function makeRegistry() {
+async function makeRegistry() {
   const dir = mkdtempSync(join(tmpdir(), 'safedesk-travelers-'));
-  return { dir, registry: new TravelerRegistry(join(dir, 'travelers.json')) };
+  const registry = new TravelerRegistry(join(dir, 'travelers.json'));
+  // Validation can reject before the constructor's asynchronous I/O completes.
+  await registry.listMasked();
+  return { dir, registry };
 }
 
 test('register masks values and persists 0600', async () => {
-  const { dir, registry } = makeRegistry();
+  const { dir, registry } = await makeRegistry();
   const card = await registry.register(CARD.handle, CARD.name, CARD.idCard, CARD.phone, CARD.allowedHosts, CARD.passport);
   assert.equal(card.phone, '138****5678');
   assert.equal(card.name, '李*');
@@ -36,7 +39,7 @@ test('register masks values and persists 0600', async () => {
 });
 
 test('validation errors', async () => {
-  const { dir, registry } = makeRegistry();
+  const { dir, registry } = await makeRegistry();
   await assert.rejects(() => registry.register('x', CARD.name, CARD.idCard, CARD.phone, CARD.allowedHosts));
   await assert.rejects(() => registry.register('traveller-li', CARD.name, '123', CARD.phone, CARD.allowedHosts));
   await assert.rejects(() => registry.register('traveller-li', CARD.name, CARD.idCard, '12345', CARD.allowedHosts));
@@ -45,7 +48,7 @@ test('validation errors', async () => {
 });
 
 test('upsert and remove', async () => {
-  const { dir, registry } = makeRegistry();
+  const { dir, registry } = await makeRegistry();
   await registry.register(CARD.handle, CARD.name, CARD.idCard, CARD.phone, CARD.allowedHosts, CARD.passport);
   const card = await registry.register(CARD.handle, CARD.name, CARD.idCard, CARD.phone, CARD.allowedHosts, null);
   assert.equal(card.passport, null);
@@ -55,7 +58,7 @@ test('upsert and remove', async () => {
 });
 
 test('placeholders cover all traveler fields with quota', async () => {
-  const { dir, registry } = makeRegistry();
+  const { dir, registry } = await makeRegistry();
   await registry.register(CARD.handle, CARD.name, CARD.idCard, CARD.phone, CARD.allowedHosts, CARD.passport);
   const mapping = registry.issuePlaceholders(makeSandbox());
   for (const field of TRAVELER_FIELDS) {
@@ -68,7 +71,7 @@ test('placeholders cover all traveler fields with quota', async () => {
 });
 
 test('resolve injections returns real values only for known cards', async () => {
-  const { dir, registry } = makeRegistry();
+  const { dir, registry } = await makeRegistry();
   await registry.register(CARD.handle, CARD.name, CARD.idCard, CARD.phone, CARD.allowedHosts, CARD.passport);
   const sbx = makeSandbox();
   sbx.travelerPlaceholders = registry.issuePlaceholders(sbx);

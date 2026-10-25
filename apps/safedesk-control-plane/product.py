@@ -8,6 +8,9 @@ from policy import ALLOWED_AGENTS, POLICIES
 
 STATUS_LABELS = {
     "pending_approval": "待审批",
+    "queued": "排队中",
+    "completed": "已完成",
+    "failed": "失败",
     "running": "运行中",
     "paused": "已暂停",
     "rejected": "已拒绝",
@@ -18,6 +21,7 @@ DEFAULT_SETTINGS = {
     "orgName": "SafeDesk 安全运营中心",
     "requireApproval": True,
     "maxConcurrent": 8,
+    "maxQueued": 100,
     "sessionTimeoutMin": 240,
     "allowPhoneLogin": True,
     "allowWechatLogin": True,
@@ -176,6 +180,9 @@ def overview(items: list[dict], events: list[dict], user: dict | None) -> dict:
         "total": len(items),
         "running": running,
         "pendingApproval": pending,
+        "queued": sum(item.get("status") == "queued" for item in items),
+        "completed": sum(item.get("status") == "completed" for item in items),
+        "failed": sum(item.get("status") == "failed" for item in items),
         "paused": paused,
         "rejected": rejected,
         "terminated": terminated,

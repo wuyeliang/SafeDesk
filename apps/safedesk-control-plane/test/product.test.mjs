@@ -25,8 +25,8 @@ test('riskFor falls back to 待评估 for unknown policies', () => {
 });
 
 // ---- statusLabels ----
-test('statusLabels covers all five lifecycle states', () => {
-  assert.deepEqual(Object.keys(statusLabels).sort(), ['paused', 'pending_approval', 'rejected', 'running', 'terminated']);
+test('statusLabels covers queue and terminal states', () => {
+  assert.deepEqual(Object.keys(statusLabels).sort(), ['completed', 'failed', 'paused', 'pending_approval', 'queued', 'rejected', 'running', 'terminated']);
 });
 
 // ---- defaultSettings ----

@@ -258,7 +258,7 @@ test('regular user cannot reject a sandbox', async () => {
   assert.equal(forbidden.response.status, 403);
 });
 
-test('user concurrent sandbox cap returns 409', async () => {
+test('pending tasks do not consume concurrency', async () => {
   const login = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
   await request('/api/settings', { method: 'POST', token: login.data.token, body: { maxConcurrent: 1 } });
   const send = await request('/api/auth/phone/send', { method: 'POST', body: { phone: '13700000003' } });
@@ -274,7 +274,7 @@ test('user concurrent sandbox cap returns 409', async () => {
     token: verify.data.token,
     body: { name: 'cap-two', agent: 'codex', policyId: 'review', workspace: '/tmp/cap-two' },
   });
-  assert.equal(second.response.status, 409);
+  assert.equal(second.response.status, 201);
 });
 
 test('admin can see another users sandbox', async () => {

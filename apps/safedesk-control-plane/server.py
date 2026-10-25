@@ -23,6 +23,7 @@ from privacy import alias_profile
 from product import DEFAULT_TEMPLATES, catalog, enrich_sandbox, filter_events, filter_sandboxes, merge_settings, overview as product_overview, risk_for
 from proxy import EgressPolicy, ProxyRuntime, serve as serve_proxy
 from travelers import TravelerRegistry
+from scheduler import ACTIVE, TERMINAL, Scheduler, validate_limits, with_positions
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
@@ -54,11 +55,17 @@ def load_sandboxes() -> list[dict]:
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not DATA_FILE.exists():
         DATA_FILE.write_text("[]\n", encoding="utf-8")
-    return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    return with_positions(json.loads(DATA_FILE.read_text(encoding="utf-8")))
 
 
 def save_sandboxes(sandboxes: list[dict]) -> None:
-    DATA_FILE.write_text(json.dumps(sandboxes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_json(DATA_FILE, [{k: v for k, v in s.items() if k != "queuePosition"} for s in sandboxes])
+
+
+def atomic_json(path, value):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def load_settings() -> dict:
@@ -69,8 +76,9 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> dict:
-    merged = merge_settings(settings)
-    SETTINGS_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    merged = merge_settings({**load_settings(), **settings})
+    validate_limits(merged)
+    atomic_json(SETTINGS_FILE, merged)
     return merged
 
 
@@ -110,6 +118,51 @@ def ensure_proxy() -> bool:
 
 def safe_name(value: object) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff-]", "-", str(value or "").strip())[:48]
+
+
+def start_sandbox(sandbox):
+    settings = load_settings()
+    if not workspace_allowed(sandbox["workspace"], settings.get("workspaceRoots") or []):
+        raise ValueError("工作区不在允许的根目录内")
+    manifest = compile_manifest(sandbox)
+    sandbox_id = sandbox["id"]
+    if POLICIES[policy_key(sandbox)]["networkMode"] != "disabled":
+        if not ensure_proxy():
+            raise ValueError("外联代理启动失败")
+        token = secrets.token_hex(12)
+        sandbox["egressToken"] = token
+        allowed, injections = set(), {}
+        for capability in sandbox.get("credentials") or []:
+            item = BROKER.get(capability)
+            if item:
+                allowed.update(item.get("allowedHosts", []))
+                placeholder = (sandbox.get("credentialPlaceholders") or {}).get(capability)
+                if placeholder:
+                    injections[placeholder] = {"value": item["value"], "hosts": item["allowedHosts"]}
+        injections.update(TRAVELERS.resolve_injections(sandbox))
+        alias = alias_profile(sandbox_id) if sandbox.get("privacyCurtain") else None
+        PROXY_RT.register(sandbox_id, token, EgressPolicy(sorted(allowed), injections, alias))
+        manifest["egress"] = {"token": token}
+    return LAUNCHER.start(sandbox, manifest)
+
+
+SCHEDULER = Scheduler(LAUNCHER, start_sandbox, PROXY_RT.unregister, security_event)
+
+
+def schedule_once():
+    with LOCK:
+        items = load_sandboxes()
+        if SCHEDULER.tick(items, load_settings()):
+            save_sandboxes(items)
+
+
+def scheduler_loop():
+    while True:
+        try:
+            schedule_once()
+        except Exception as error:
+            print(f"scheduler: {error}", flush=True)
+        threading.Event().wait(0.5)
 
 
 def visible_sandboxes(user: dict | None) -> list[dict]:
@@ -492,10 +545,6 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 sandbox["travelerPlaceholders"] = TRAVELERS.issue_placeholders(sandbox)
                 sandbox["credentialPlaceholders"] = BROKER.issue_placeholders(sandbox)
                 with LOCK:
-                    settings = load_settings()
-                    running = sum(item.get("status") in {"running", "paused", "pending_approval"} for item in load_sandboxes() if item.get("ownerId") == user["id"] or user.get("role") == "admin")
-                    if user.get("role") != "admin" and running >= int(settings.get("maxConcurrent") or 8):
-                        self.send_json(409, {"error": "已达到并发沙箱上限"}); return
                     sandboxes = load_sandboxes(); sandboxes.insert(0, sandbox); save_sandboxes(sandboxes)
                     security_event("info", "创建待审批沙箱", f"{sandbox['name']} 使用 {POLICIES[policy_id]['label']} 策略", user["id"])
                 self.send_json(201, {"sandbox": enrich_sandbox(sandbox), "manifest": compile_manifest(sandbox)})
@@ -511,7 +560,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
             except ValueError as error:
                 self.send_json(400, {"error": str(error)}); return
             with LOCK:
-                settings = save_settings(payload)
+                try:
+                    settings = save_settings(payload)
+                except ValueError as error:
+                    self.send_json(400, {"error": str(error)}); return
+                sandboxes = load_sandboxes()
+                if SCHEDULER.tick(sandboxes, settings):
+                    save_sandboxes(sandboxes)
                 security_event("info", "更新组织设置", f"{settings['orgName']} 已保存并发上限 {settings['maxConcurrent']}", user["id"])
             self.send_json(200, {"settings": settings})
             return
@@ -534,34 +589,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
             if action == "approve":
                 if sandbox["status"] != "pending_approval":
                     self.send_json(409, {"error": "沙箱不是待审批状态"}); return
-                manifest = compile_manifest(sandbox)
                 try:
-                    if POLICIES[policy_key(sandbox)]["networkMode"] != "disabled":
-                        if not ensure_proxy():
-                            raise ValueError("外联代理启动失败")
-                        token = secrets.token_hex(12)
-                        sandbox["egressToken"] = token
-                        allowed, injections = set(), {}
-                        for capability in list(sandbox.get("credentials") or []):
-                            item = BROKER.get(capability)
-                            if item:
-                                allowed.update(item.get("allowedHosts", []))
-                                placeholder = (sandbox.get("credentialPlaceholders") or {}).get(capability)
-                                if placeholder:
-                                    injections[placeholder] = {"value": item["value"], "hosts": item["allowedHosts"]}
-                        injections.update(TRAVELERS.resolve_injections(sandbox))
-                        alias = alias_profile(sandbox_id) if sandbox.get("privacyCurtain") else None
-                        PROXY_RT.register(sandbox_id, token, EgressPolicy(sorted(allowed), injections, alias))
-                        manifest["egress"] = {"token": token}
-                    rng = LAUNCHER.info(sandbox_id)
-                    runtime_info = LAUNCHER.start(sandbox, manifest) if not rng.get("alive") else rng
+                    SCHEDULER.enqueue(sandboxes, sandbox, load_settings(), user["id"])
                 except ValueError as error:
-                    PROXY_RT.unregister(sandbox_id)
-                    security_event("block", "启动失败", f"{sandbox['name']} 拉起失败：{error}", user["id"])
-                    self.send_json(502, {"error": str(error)}); return
-                sandbox["status"] = "running"; sandbox["startedAt"] = iso_now(); sandbox["approvedBy"] = user["id"]
-                sandbox["runtime"] = runtime_info
-                security_event("allow", "人工审批", f"{sandbox['name']} 已启动（{runtime_info.get('mode', 'wasmer')} 模式）；凭据仅由主机 Broker 按策略代签", user["id"])
+                    self.send_json(409, {"error": str(error)}); return
             elif action == "reject":
                 if sandbox["status"] != "pending_approval":
                     self.send_json(409, {"error": "沙箱不是待审批状态"}); return
@@ -571,26 +602,33 @@ class ApiHandler(SimpleHTTPRequestHandler):
             elif action == "pause":
                 if sandbox["status"] != "running":
                     self.send_json(409, {"error": "仅运行中的沙箱可以暂停"}); return
-                LAUNCHER.pause(sandbox_id)
+                if not LAUNCHER.pause(sandbox_id):
+                    self.send_json(409, {"error": "进程状态待确认，请核对执行器"}); return
                 PROXY_RT.set_paused(sandbox_id, True)
                 sandbox["status"] = "paused"; sandbox["pausedAt"] = iso_now(); sandbox["pausedBy"] = user["id"]
                 security_event("info", "暂停沙箱", f"{sandbox['name']} 已暂停，外联和会话凭据冻结", user["id"])
             elif action == "resume":
                 if sandbox["status"] != "paused":
                     self.send_json(409, {"error": "仅暂停中的沙箱可以恢复"}); return
-                LAUNCHER.resume(sandbox_id)
+                if not LAUNCHER.resume(sandbox_id):
+                    self.send_json(409, {"error": "进程状态待确认，请核对执行器"}); return
                 PROXY_RT.set_paused(sandbox_id, False)
                 sandbox["status"] = "running"; sandbox["resumedAt"] = iso_now(); sandbox["resumedBy"] = user["id"]
                 security_event("allow", "恢复沙箱", f"{sandbox['name']} 已恢复运行", user["id"])
             else:
-                if sandbox["status"] == "terminated":
-                    self.send_json(409, {"error": "沙箱已终止"}); return
-                LAUNCHER.stop(sandbox_id)
+                if sandbox["status"] in TERMINAL:
+                    self.send_json(409, {"error": "沙箱已结束"}); return
+                if sandbox["status"] in ACTIVE and not LAUNCHER.stop(sandbox_id):
+                    self.send_json(409, {"error": "进程状态待确认，请核对执行器"}); return
                 PROXY_RT.unregister(sandbox_id)
+                sandbox.pop("egressToken", None)
                 sandbox["status"] = "terminated"; sandbox["terminatedAt"] = iso_now(); sandbox["terminatedBy"] = user["id"]
                 security_event("block", "终止沙箱", f"{sandbox['name']} 已终止，短期会话凭据失效", user["id"])
+            SCHEDULER.tick(sandboxes, load_settings())
             save_sandboxes(sandboxes)
-            self.send_json(200, {"sandbox": enrich_sandbox(sandbox)})
+            sandbox = next(s for s in with_positions(sandboxes) if s["id"] == sandbox_id)
+            status = 202 if sandbox["status"] == "queued" else 502 if action == "approve" and sandbox["status"] == "failed" else 200
+            self.send_json(status, {"sandbox": enrich_sandbox(sandbox)})
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -615,5 +653,6 @@ if __name__ == "__main__":
         context.load_cert_chain(cert, key)
         server.socket = context.wrap_socket(server.socket, server_side=True)
         scheme = "https"
+    threading.Thread(target=scheduler_loop, daemon=True).start()
     print(f"SafeDesk control plane listening on {scheme}://{host}:{port}")
     server.serve_forever()

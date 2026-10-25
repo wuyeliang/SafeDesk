@@ -8,9 +8,12 @@ import { CredentialBroker, MAX_CREDENTIALS_PER_SANDBOX, PLACEHOLDER_PREFIX } fro
 
 const makeSandbox = (id = 'sbx-broker01', overrides = {}) => ({ id, credentials: ['github-read'], status: 'running', ...overrides });
 
-function makeBroker() {
+async function makeBroker() {
   const dir = mkdtempSync(join(tmpdir(), 'safedesk-broker-'));
-  return { dir, broker: new CredentialBroker(join(dir, 'credentials.json')) };
+  const broker = new CredentialBroker(join(dir, 'credentials.json'));
+  // Initialization must finish before even synchronous-only tests can tear down.
+  await broker.listMasked();
+  return { dir, broker };
 }
 
 async function teardown(dir) {
@@ -18,7 +21,7 @@ async function teardown(dir) {
 }
 
 test('put masks value and persists to 0600 file', async () => {
-  const { dir, broker } = makeBroker();
+  const { dir, broker } = await makeBroker();
   const entry = await broker.put('github-read', 'ghp_secretvalue123456', ['api.github.com']);
   assert.equal(entry.masked, 'ghp_****');
   assert.ok(!entry.masked.includes('ghp_secretvalue123456'));
@@ -30,13 +33,13 @@ test('put masks value and persists to 0600 file', async () => {
 });
 
 test('put requires allowlisted hosts', async () => {
-  const { dir, broker } = makeBroker();
+  const { dir, broker } = await makeBroker();
   await assert.rejects(() => broker.put('github-read', 'secret', []), /允许的目的地/);
   await teardown(dir);
 });
 
 test('placeholders are unique per issue', async () => {
-  const { dir, broker } = makeBroker();
+  const { dir, broker } = await makeBroker();
   const first = broker.issuePlaceholders(makeSandbox('sbx-a1'));
   const second = broker.issuePlaceholders(makeSandbox('sbx-a1'));
   assert.ok(first['github-read'].startsWith(PLACEHOLDER_PREFIX));
@@ -45,7 +48,7 @@ test('placeholders are unique per issue', async () => {
 });
 
 test('placeholders respect quota', async () => {
-  const { dir, broker } = makeBroker();
+  const { dir, broker } = await makeBroker();
   const names = Array.from({ length: MAX_CREDENTIALS_PER_SANDBOX + 4 }, (_, idx) => `cred-${idx}`);
   const mapping = broker.issuePlaceholders(makeSandbox('sbx-bq', { credentials: names }));
   assert.equal(Object.keys(mapping).length, MAX_CREDENTIALS_PER_SANDBOX);
@@ -53,7 +56,7 @@ test('placeholders respect quota', async () => {
 });
 
 test('resolve returns value only for allowed host on running sandbox', async () => {
-  const { dir, broker } = makeBroker();
+  const { dir, broker } = await makeBroker();
   await broker.put('github-read', 'ghp_secretvalue123456', ['api.github.com']);
   assert.equal(await broker.resolve(makeSandbox(), 'github-read', 'api.github.com'), 'ghp_secretvalue123456');
   assert.equal(await broker.resolve(makeSandbox(), 'github-read', 'evil.example.com'), null);
@@ -70,7 +73,7 @@ test('wildcard host matching', () => {
 });
 
 test('rotate and remove', async () => {
-  const { dir, broker } = makeBroker();
+  const { dir, broker } = await makeBroker();
   await broker.put('github-read', 'ghp_secretvalue123456', ['api.github.com']);
   const before = (await broker.get('github-read')).digest;
   const rotated = await broker.rotate('github-read', 'ghp_newsecret778899');

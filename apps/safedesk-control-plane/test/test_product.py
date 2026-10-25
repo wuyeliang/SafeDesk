@@ -47,8 +47,8 @@ class RiskForTest(unittest.TestCase):
 
 
 class StatusLabelsTest(unittest.TestCase):
-    def test_covers_five_lifecycle_states(self):
-        self.assertEqual(sorted(STATUS_LABELS), ["paused", "pending_approval", "rejected", "running", "terminated"])
+    def test_covers_queue_and_terminal_states(self):
+        self.assertEqual(sorted(STATUS_LABELS), ["completed", "failed", "paused", "pending_approval", "queued", "rejected", "running", "terminated"])
 
     def test_pending_label(self):
         self.assertEqual(STATUS_LABELS["pending_approval"], "待审批")
