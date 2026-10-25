@@ -244,3 +244,16 @@ test('catalog lists credential profiles', () => {
 test('catalog lists available MCP servers', () => {
   assert.ok(cat.capabilities.mcpServers.includes('github'));
 });
+test('catalog defaultPackage is text', () => {
+  assert.equal(typeof catalog().defaultPackage, 'string');
+});
+test('catalog defaultPackage honors SAFEDESK_DEFAULT_PACKAGE', () => {
+  const previous = process.env.SAFEDESK_DEFAULT_PACKAGE;
+  process.env.SAFEDESK_DEFAULT_PACKAGE = '/opt/wasmer-images/safedesk-agent-python.webc';
+  try {
+    assert.equal(catalog().defaultPackage, '/opt/wasmer-images/safedesk-agent-python.webc');
+  } finally {
+    if (previous === undefined) delete process.env.SAFEDESK_DEFAULT_PACKAGE;
+    else process.env.SAFEDESK_DEFAULT_PACKAGE = previous;
+  }
+});

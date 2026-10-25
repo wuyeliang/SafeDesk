@@ -1,0 +1,30 @@
+# Replace the model with one available to your API account.
+model = "REPLACE_WITH_AVAILABLE_MODEL"
+model_provider = "safedesk_case"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+web_search = "disabled"
+
+[model_providers.safedesk_case]
+name = "SafeDesk test gateway"
+# This hostname belongs to the proposed isolated Linux test network.
+# The current SafeDesk egress proxy is NOT this gateway.
+base_url = "http://safedesk-model-gateway:8080/v1"
+wire_api = "responses"
+# A per-run, revocable gateway token; never the real upstream API key.
+env_key = "SAFEDESK_SESSION_TOKEN"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 1
+stream_max_retries = 1
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+
+[shell_environment_policy.filters]
+"PATH" = "include"
+"HOME" = "include"
+"LANG" = "include"
+"LC_ALL" = "include"
+"TMPDIR" = "include"

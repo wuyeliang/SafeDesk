@@ -1,9 +1,11 @@
 """Unit tests for product helpers: overview, filters, catalog, settings."""
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -336,6 +338,13 @@ class CatalogTest(unittest.TestCase):
 
     def test_mcp_servers(self):
         self.assertIn("github", self.cat["capabilities"]["mcpServers"])
+
+    def test_default_package_is_text(self):
+        self.assertIsInstance(self.cat["defaultPackage"], str)
+
+    def test_default_package_honors_env(self):
+        with patch.dict(os.environ, {"SAFEDESK_DEFAULT_PACKAGE": "/opt/wasmer-images/safedesk-agent-python.webc"}):
+            self.assertEqual(catalog()["defaultPackage"], "/opt/wasmer-images/safedesk-agent-python.webc")
 
 
 if __name__ == "__main__":

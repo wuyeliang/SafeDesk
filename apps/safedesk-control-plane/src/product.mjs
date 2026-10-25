@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { allowedAgents, policies } from './policy.mjs';
 
 export const statusLabels = {
@@ -82,6 +85,16 @@ export function riskFor(policyId) {
   return { review: '低风险', balanced: '中风险', build: '高风险' }[policyId] || '待评估';
 }
 
+export function defaultPackage() {
+  const configured = String(process.env.SAFEDESK_DEFAULT_PACKAGE || '').trim();
+  if (configured) return configured;
+  const candidates = [
+    '/opt/wasmer-images/safedesk-agent-python.webc',
+    join(homedir(), 'wasmer-images', 'safedesk-agent-python.webc'),
+  ];
+  return candidates.find((path) => existsSync(path)) || '';
+}
+
 export function catalog() {
   return {
     policies: Object.values(policies).map((policy) => ({
@@ -94,6 +107,7 @@ export function catalog() {
       }[policy.id],
     })),
     agents: Object.entries(allowedAgents).map(([id, value]) => ({ id, ...value, supported: true })),
+    defaultPackage: defaultPackage(),
     capabilities: {
       credentials: ['github-read', 'gitlab-read', 'openai-proxy', 'anthropic-proxy', 'internal-mcp', 'meituan-proxy', 'ctrip-pay'],
       mcpServers: ['github', 'gitlab', 'jira', 'confluence', 'browser', 'docs'],

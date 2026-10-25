@@ -15,6 +15,7 @@
     section { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; box-shadow:var(--shadow); }
     h2 { margin:0 0 12px; font-size:16px; } p,label,li,small { color:var(--muted); }
     label { display:block; margin:10px 0 6px; font-size:13px; } input,select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:12px; font:inherit; }
+    label.check { display:flex; align-items:center; gap:8px; color:var(--ink); } label.check input { width:auto; padding:0; }
     .chips { display:flex; flex-wrap:wrap; gap:8px; } .chip { border:1px solid var(--line); padding:8px 10px; border-radius:999px; cursor:pointer; font-size:12px; }
     .chip.on { background:#e8f0ff; border-color:#165dff; color:#165dff; }
     button { border:0; background:var(--brand); color:#fff; padding:11px 16px; border-radius:12px; font-weight:700; cursor:pointer; }
@@ -126,6 +127,9 @@
       <label>任务模板</label>
       <select id="template"><option value="">不使用模板</option></select>
       <label>项目目录（绝对路径）</label><input id="workspace" placeholder="/Users/you/project" />
+      <label>镜像路径</label><input id="package" placeholder="留空则使用 wasmer/bash@latest" />
+      <label class="check"><input id="privacy" type="checkbox" /> 打开隐私帘</label>
+      <p id="privacyHint">打开后，出站请求里的姓名、手机号、地址会换成沙箱别名，银行卡字段会被去掉。</p>
       <label>任务说明</label><input id="purpose" placeholder="例如：审阅依赖漏洞，不改代码" />
       <label>凭据能力（不填密钥）</label>
       <div class="chips" id="credChips"></div>
@@ -309,7 +313,8 @@
           s.status === 'paused' ? `<button data-resume="${s.id}">恢复</button>` : '',
           s.status !== 'terminated' && s.status !== 'rejected' ? `<button class="danger" data-stop="${s.id}">终止</button>` : '',
         ].filter(Boolean).join('');
-        return `<div class="card"><strong>${s.name}</strong> · ${s.agentLabel || s.agent}${s.ownerName ? ' · ' + s.ownerName : ''} <span class="risk ${s.risk || ''}">${s.risk || ''}</span><div class="status ${s.status}">${s.statusLabel || s.status}</div><small>${s.workspace}${s.purpose ? ' · ' + s.purpose : ''}</small><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${actions}</div></div>`;
+        const curtain = s.privacyCurtain ? ' · 隐私帘开' : '';
+        return `<div class="card"><strong>${s.name}</strong> · ${s.agentLabel || s.agent}${s.ownerName ? ' · ' + s.ownerName : ''} <span class="risk ${s.risk || ''}">${s.risk || ''}</span><div class="status ${s.status}">${s.statusLabel || s.status}${curtain}</div><small>${s.workspace}${s.purpose ? ' · ' + s.purpose : ''}</small><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${actions}</div></div>`;
       }).join('') || '<p>没有匹配的沙箱</p>';
     }
     function renderCatalog(catalog) {
@@ -317,12 +322,18 @@
     }
     function applyTemplate() {
       const tpl = templates.find((item) => item.id === $('template').value);
-      if (!tpl) return;
+      if (!tpl) {
+        $('privacy').checked = false;
+        $('package').value = catalogData.defaultPackage || '';
+        return;
+      }
       $('name').value = tpl.name;
       $('agent').value = tpl.agent;
       $('policy').value = tpl.policyId;
       $('workspace').value = tpl.workspace;
       $('purpose').value = tpl.purpose;
+      $('privacy').checked = Boolean(tpl.privacy);
+      $('package').value = (Array.isArray(tpl.packages) && tpl.packages[0]) || catalogData.defaultPackage || '';
       selected.credentials = new Set(tpl.credentials);
       selected.mcpServers = new Set(tpl.mcpServers);
       chips($('credChips'), catalogData.capabilities.credentials, 'credentials');
@@ -353,6 +364,7 @@
       $('policyHint').textContent = current.description;
       chips($('credChips'), catalogData.capabilities.credentials, 'credentials');
       chips($('mcpChips'), catalogData.capabilities.mcpServers, 'mcpServers');
+      if (!$('package').value.trim() && catalogData.defaultPackage) $('package').value = catalogData.defaultPackage;
       if (data.settings) {
         $('orgName').value = data.settings.orgName || '';
         $('maxConcurrent').value = data.settings.maxConcurrent || 8;
@@ -497,7 +509,10 @@
     ['eventSearch','eventLevel'].forEach((id) => $(id).addEventListener('change', () => renderEvents(allEvents)));
     $('create').onclick = async () => {
       try {
-        const created = await api('/api/sandboxes', { method:'POST', body: JSON.stringify({ name:$('name').value, agent:$('agent').value, policyId:$('policy').value, workspace:$('workspace').value, purpose:$('purpose').value, credentials:[...selected.credentials], mcpServers:[...selected.mcpServers] }) });
+        const packagePath = $('package').value.trim();
+        const payload = { name:$('name').value, agent:$('agent').value, policyId:$('policy').value, workspace:$('workspace').value, purpose:$('purpose').value, credentials:[...selected.credentials], mcpServers:[...selected.mcpServers], privacy:$('privacy').checked };
+        if (packagePath) payload.packages = [packagePath];
+        const created = await api('/api/sandboxes', { method:'POST', body: JSON.stringify(payload) });
         $('manifest').textContent = JSON.stringify(created.manifest, null, 2); await bootstrap();
       } catch (error) { alert(error.message); }
     };

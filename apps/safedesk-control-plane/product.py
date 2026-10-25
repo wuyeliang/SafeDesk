@@ -1,6 +1,9 @@
 """Enterprise product helpers: overview, filters, templates, and settings."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from policy import ALLOWED_AGENTS, POLICIES
 
 STATUS_LABELS = {
@@ -86,6 +89,21 @@ def risk_for(policy_id: str) -> str:
     return {"review": "低风险", "balanced": "中风险", "build": "高风险"}.get(policy_id, "待评估")
 
 
+def default_package() -> str:
+    """Local sandbox image to prefill in the console. Empty means wasmer/bash@latest."""
+    configured = os.getenv("SAFEDESK_DEFAULT_PACKAGE", "").strip()
+    if configured:
+        return configured
+    candidates = [
+        Path("/opt/wasmer-images/safedesk-agent-python.webc"),
+        Path.home() / "wasmer-images" / "safedesk-agent-python.webc",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return ""
+
+
 def catalog() -> dict:
     return {
         "policies": [
@@ -101,6 +119,7 @@ def catalog() -> dict:
             for policy in POLICIES.values()
         ],
         "agents": [{"id": key, **value, "supported": True} for key, value in ALLOWED_AGENTS.items()],
+        "defaultPackage": default_package(),
         "capabilities": {
             "credentials": ["github-read", "gitlab-read", "openai-proxy", "anthropic-proxy", "internal-mcp", "meituan-proxy", "ctrip-pay"],
             "mcpServers": ["github", "gitlab", "jira", "confluence", "browser", "docs"],

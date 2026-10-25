@@ -1,0 +1,33 @@
+# Optional: copy to .github/workflows/codex-case.yaml to enable.
+name: Codex case fixture
+on:
+  pull_request:
+    paths:
+      - "demos/07-codex-key-injection.md"
+      - "demos/codex-key-injection/**"
+      - "demos/tools/check_codex_fixture.py"
+      - ".github/workflows/codex-case.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - "demos/07-codex-key-injection.md"
+      - "demos/codex-key-injection/**"
+      - "demos/tools/check_codex_fixture.py"
+      - ".github/workflows/codex-case.yaml"
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check intentional failure baseline without API credentials
+        run: python demos/tools/check_codex_fixture.py
+      - name: Parse Codex configuration template
+        run: |
+          python -c 'import pathlib, tomllib; tomllib.loads(pathlib.Path("demos/codex-key-injection/config.toml.example").read_text())'

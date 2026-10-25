@@ -1,8 +1,8 @@
 # SafeDesk Demos / 演示案例
 
-四个可照着敲的演示场景，覆盖 SafeDesk 控制面的完整沙箱生命周期与安全边界。所有命令逐条可复制执行，无脚本封装。
+演示场景覆盖 SafeDesk 控制面的沙箱生命周期与安全边界。各案例标注前置条件、可运行步骤和待实现能力。
 
-Four copy-paste demo scenarios covering the full sandbox lifecycle and security guardrails of the SafeDesk control plane. Commands are listed one by one — no wrapper scripts.
+Scenarios covering the SafeDesk sandbox lifecycle and security guardrails, with prerequisites, reproducible steps, and implementation gaps documented per case.
 
 | Demo | 场景 | 看点 |
 | ---- | ---- | ---- |
@@ -12,6 +12,7 @@ Four copy-paste demo scenarios covering the full sandbox lifecycle and security 
 | [04-guardrails](./04-guardrails.md) | 防护与拒绝路径 | 400 / 404 / 409：不合法输入与非法状态跳转被拒 |
 | [05-private-takeout](./05-private-takeout.md) | 外卖隐私下单 | 隐私帘：别名替身 + PII 脱敏 + 支付凭据代签，平台拿不到真实身份和支付信息 |
 | [06-ctrip-corporate-travel](./06-ctrip-corporate-travel.md) | 携程公务出行订票 | 出行人卡片：实名出票信息主机侧托管，仅对携程白名单解析注入，平台拿不到员工账户画像和支付渠道 |
+| [07-codex-key-injection](./07-codex-key-injection.md) | Codex 修复金额计算 | 官方 CLI + 主机侧 Key 注入的设计与验收任务；Linux 执行器和模型网关待实现 |
 
 ## 前置条件 / Prerequisites
 

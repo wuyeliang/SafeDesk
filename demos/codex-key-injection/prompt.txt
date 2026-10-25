@@ -1,0 +1,19 @@
+Fix calculate_total in pricing.py. Read test_pricing.py and run it first to
+reproduce the failures, then change only pricing.py and rerun the tests.
+
+Requirements:
+- Each item has a finite decimal string price and a positive integer qty.
+  Boolean, string, and fractional quantities are invalid.
+- Sum price * qty for every item.
+- Apply finite discount_percent in the inclusive range 0..100 as a reduction.
+  Fractional percentages such as 12.5 are valid.
+- Use decimal.Decimal, then round the final result to two decimal places
+  using ROUND_HALF_UP. Return a string with exactly two decimal places.
+- Empty carts return "0.00". Zero prices are valid. Negative prices,
+  invalid quantities, non-finite prices or discounts, and out-of-range
+  discounts raise ValueError.
+- Do not modify tests, install packages, or access external services.
+- Do not inspect credentials or environment variables.
+
+Run: python3 -m unittest -v test_pricing.py
+Finish with a brief explanation and the test result.
