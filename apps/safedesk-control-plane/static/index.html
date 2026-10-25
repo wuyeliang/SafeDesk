@@ -22,6 +22,11 @@
     .card { border:1px solid var(--line); border-radius:16px; padding:12px; margin-bottom:10px; }
     .status { font-size:12px; font-weight:700; } .running { color:var(--ok); } .pending_approval { color:var(--warn); } .terminated { color:var(--danger); }
     pre { background:#0f1728; color:#dbe7ff; padding:12px; border-radius:12px; overflow:auto; font-size:12px; }
+    .drawer-card.wide { width:min(860px,calc(100% - 32px)); }
+    .logview { height:min(56vh,480px); background:#0f1728; color:#c7f0c7; padding:14px; border-radius:14px; overflow-y:auto; font-size:12.5px; font-family:"SF Mono",Menlo,monospace; white-space:pre-wrap; word-break:break-all; margin:12px 0; }
+    .logview:empty::before { content:'构建日志加载中…'; color:#5d6b82; }
+    .logstatus { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:12px; color:var(--muted); }
+    .logstatus .live { color:var(--ok); font-weight:700; }
     .event { font-size:13px; padding:8px 0; border-bottom:1px dashed var(--line); } .event b { display:block; }
     .hidden { display:none !important; }
     .dashboard { grid-column:1/-1; display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
@@ -187,6 +192,17 @@
       <div style="display:flex;gap:8px;justify-content:flex-end"><button class="ghost" id="closeDrawer">关闭</button></div>
     </div>
   </div>
+  <div id="logDrawer" class="drawer hidden">
+    <div class="drawer-card wide">
+      <h2>构建日志 <span id="logSandboxTag" class="risk"></span></h2>
+      <p>沙箱内构建/执行过程的输出实时滚动；结束后自动停止刷新。</p>
+      <div id="logOutput" class="logview"></div>
+      <div class="logstatus">
+        <span id="logStatus" class="live"></span>
+        <span><button class="ghost" id="closeLogDrawer">关闭</button></span>
+      </div>
+    </div>
+  </div>
   <div id="passwordGate" class="password-gate hidden">
     <div class="password-card">
       <h2>请修改默认密码</h2>
@@ -286,6 +302,7 @@
       $('list').innerHTML = filtered.map((s) => {
         const actions = [
           `<button class="ghost" data-view="${s.id}">详情</button>`,
+          (s.runtime || ['running','paused'].includes(s.status)) ? `<button class="ghost" data-logs="${s.id}">构建日志</button>` : '',
           admin && s.status === 'pending_approval' ? `<button data-approve="${s.id}">审批</button>` : '',
           admin && s.status === 'pending_approval' ? `<button class="ghost" data-reject="${s.id}">拒绝</button>` : '',
           s.status === 'running' ? `<button class="ghost" data-pause="${s.id}">暂停</button>` : '',
@@ -504,10 +521,57 @@
       } catch (error) { $('gatePasswordError').textContent = error.message; }
     };
     $('closeDrawer').onclick = () => $('drawer').classList.add('hidden');
+    let logTimer = null, logOffset = 0, logSandboxId = null;
+    function closeLogPanel() {
+      clearInterval(logTimer);
+      logTimer = null;
+      logSandboxId = null;
+      $('logDrawer').classList.add('hidden');
+    }
+    $('closeLogDrawer').onclick = closeLogPanel;
+    async function pollLogs(final = false) {
+      if (!logSandboxId) return;
+      try {
+        const data = await api(`/api/sandboxes/${logSandboxId}/logs?offset=${logOffset}`);
+        logOffset = data.offset ?? logOffset;
+        if (data.content) {
+          $('logOutput').textContent += data.content;
+          $('logOutput').scrollTop = $('logOutput').scrollHeight;
+        }
+        $('logStatus').textContent = data.alive ? '构建进行中 · 每秒刷新' : `构建已结束（退出码 ${data.exitCode ?? '—'} · 日志 ${data.size ?? 0}B）`;
+        $('logStatus').className = data.alive ? 'live' : '';
+        if (!data.alive && !final) {
+          clearInterval(logTimer);
+          logTimer = setTimeout(() => pollLogs(true), 800);
+        }
+      } catch (error) {
+        $('logStatus').textContent = `日志读取失败：${error.message}`;
+        $('logStatus').className = '';
+        if (!final) clearInterval(logTimer);
+      }
+    }
+    function openLogPanel(id, name) {
+      closeLogPanel();
+      logSandboxId = id;
+      logOffset = 0;
+      $('logOutput').textContent = '';
+      $('logSandboxTag').textContent = name || id;
+      $('logStatus').textContent = '构建进行中 · 每秒刷新';
+      $('logStatus').className = 'live';
+      $('logDrawer').classList.remove('hidden');
+      pollLogs();
+      logTimer = setInterval(pollLogs, 1000);
+    }
     document.body.addEventListener('click', async (e) => {
       const approve = e.target.dataset.approve, stop = e.target.dataset.stop, view = e.target.dataset.view;
       const reject = e.target.dataset.reject, pause = e.target.dataset.pause, resume = e.target.dataset.resume;
+      const logsBtn = e.target.dataset.logs;
       try {
+        if (logsBtn) {
+          const target = allSandboxes.find((item) => item.id === logsBtn);
+          openLogPanel(logsBtn, target ? target.name : logsBtn);
+          return;
+        }
         if (approve) await api(`/api/sandboxes/${approve}/approve`, { method:'POST' });
         if (reject) await api(`/api/sandboxes/${reject}/reject`, { method:'POST', body: JSON.stringify({ reason: prompt('拒绝原因') || '不符合安全策略' }) });
         if (pause) await api(`/api/sandboxes/${pause}/pause`, { method:'POST' });

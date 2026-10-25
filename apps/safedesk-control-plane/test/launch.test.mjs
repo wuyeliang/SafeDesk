@@ -97,3 +97,32 @@ test('reap orphans terminates untracked processes', async () => {
   await sleep(300);
   rmSync(dir, { recursive: true, force: true });
 });
+
+import { writeFileSync } from 'node:fs';
+
+test('readLog is incremental and clamps beyond eof', () => {
+  const { dir, launcher } = makeLauncher();
+  const logPath = join(dir, 'runners', 'sbx-log01.log');
+  writeFileSync(logPath, 'first\n');
+  const first = launcher.readLog('sbx-log01', 0);
+  assert.equal(first.content, 'first\n');
+  assert.equal(first.offset, 'first\n'.length);
+  assert.equal(first.alive, false);
+  assert.equal(first.mode, 'final');
+  writeFileSync(logPath, 'first\nsecond\n');
+  const second = launcher.readLog('sbx-log01', first.offset);
+  assert.equal(second.content, 'second\n');
+  const tail = launcher.readLog('sbx-log01', 9999);
+  assert.equal(tail.content, '');
+  assert.equal(tail.offset, 'first\nsecond\n'.length);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('readLog on unknown sandbox is empty final', () => {
+  const { dir, launcher } = makeLauncher();
+  const result = launcher.readLog('sbx-unknown');
+  assert.equal(result.content, '');
+  assert.equal(result.offset, 0);
+  assert.equal(result.alive, false);
+  rmSync(dir, { recursive: true, force: true });
+});

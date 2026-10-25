@@ -277,8 +277,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json(200, {"travelers": TRAVELERS.list_masked()})
             return
-        match = re.fullmatch(r"/api/sandboxes/(sbx-[\w-]+)(?:/(manifest|activity))?", urlsplit(self.path).path)
-        if match and match.group(2) in (None, "manifest", "activity"):
+        match = re.fullmatch(r"/api/sandboxes/(sbx-[\w-]+)(?:/(manifest|activity|logs))?", urlsplit(self.path).path)
+        if match and match.group(2) in (None, "manifest", "activity", "logs"):
             user = self.require_user()
             if user is None:
                 return
@@ -289,6 +289,14 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     return
                 if match.group(2) == "activity":
                     self.send_json(200, {"events": [item for item in EVENTS if sandbox["name"] in str(item.get("detail", ""))]})
+                    return
+                if match.group(2) == "logs":
+                    query = query_map(self.path)
+                    try:
+                        offset = int(query.get("offset") or 0)
+                    except ValueError:
+                        offset = 0
+                    self.send_json(200, LAUNCHER.read_log(sandbox["id"], offset=offset))
                     return
                 if match.group(2) in (None, "manifest"):
                     payload = {"sandbox": enrich_sandbox(sandbox)}

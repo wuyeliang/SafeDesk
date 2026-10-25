@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync } from 'node:fs';
+import { closeSync, createWriteStream, mkdirSync, openSync, readSync, statSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
 /** Isolation runtime launcher: compiles SandboxLaunchPlan into a real process (REQ-EX-001..007, 009..012). */
@@ -73,6 +73,36 @@ export class Launcher {
 
   isAlive(sandboxId) {
     return Boolean(this.info(sandboxId).alive);
+  }
+
+  /** Incremental read of the sandbox process log (REQ-EX-011 real-time build output). */
+  readLog(sandboxId, offset = 0, limit = 65536) {
+    const state = this.info(sandboxId);
+    const path = join(this.stateDir, `${sandboxId}.log`);
+    let size = 0;
+    try { size = statSync(path).size; } catch { /* no log yet */ }
+    const seek = Math.max(0, Math.min(Number(offset) || 0, size));
+    let content = '';
+    let readBytes = 0;
+    if (seek < size) {
+      const handle = openSync(path, 'r');
+      try {
+        const buffer = Buffer.alloc(Math.min(limit, size - seek));
+        readBytes = readSync(handle, buffer, 0, buffer.length, seek);
+        content = buffer.subarray(0, readBytes).toString('utf8');
+      } finally {
+        closeSync(handle);
+      }
+    }
+    return {
+      content,
+      offset: seek + readBytes,
+      size,
+      alive: Boolean(state.alive),
+      pid: state.pid ?? null,
+      exitCode: state.exitCode ?? null,
+      mode: this._procs.get(sandboxId) ? 'live' : 'final',
+    };
   }
 
   pause(sandboxId) {

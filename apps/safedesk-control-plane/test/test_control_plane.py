@@ -227,6 +227,31 @@ class ControlPlaneApiTest(unittest.TestCase):
             status, _ = self.request(method, f"/api/sandboxes/sbx-missing/{action}")
             self.assertEqual(status, 404, action)
 
+    def test_logs_endpoint_shape_and_offset(self):
+        _, data = self.create_sandbox(name="logs-me", policyId="build", credentials=[])
+        sandbox_id = data["sandbox"]["id"]
+        status, approved = self.request("POST", f"/api/sandboxes/{sandbox_id}/approve")
+        self.assertEqual(status, 200, approved.get("error"))
+        self.assertEqual(approved["sandbox"]["status"], "running")
+        time.sleep(0.5)
+        status, first = self.request("GET", f"/api/sandboxes/{sandbox_id}/logs")
+        self.assertEqual(status, 200)
+        for key in ("content", "offset", "size", "alive"):
+            self.assertIn(key, first)
+        self.assertGreaterEqual(first["size"], 0)
+        status, second = self.request("GET", f"/api/sandboxes/{sandbox_id}/logs?offset={first['offset']}")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(second["offset"], first["offset"])
+        self.request("POST", f"/api/sandboxes/{sandbox_id}/terminate")
+        time.sleep(0.3)
+        status, tail = self.request("GET", f"/api/sandboxes/{sandbox_id}/logs?offset={second['offset']}")
+        self.assertEqual(status, 200, "终止后日志仍可读")
+        self.assertIn("mode", tail)
+
+    def test_logs_endpoint_unknown_sandbox_404(self):
+        status, _ = self.request("GET", "/api/sandboxes/sbx-missing/logs")
+        self.assertEqual(status, 404)
+
     def test_lifecycle_events_recorded(self):
         _, data = self.create_sandbox(name="eventful")
         self.request("POST", f"/api/sandboxes/{data['sandbox']['id']}/approve")

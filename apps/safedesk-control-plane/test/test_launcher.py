@@ -97,6 +97,31 @@ class LauncherLifecycleTest(unittest.TestCase):
         dead = self.launcher.reap_orphans(live_ids=[])
         self.assertIn("sbx-launch04", dead)
 
+    def test_read_log_incremental_and_final(self):
+        launcher = self.launcher
+        log_path = self.dir / "runners" / "sbx-log01.log"
+        log_path.write_text("first\n", encoding="utf-8")
+        first = launcher.read_log("sbx-log01", offset=0)
+        self.assertEqual(first["content"], "first\n")
+        self.assertEqual(first["offset"], len("first\n"))
+        self.assertFalse(first["alive"])
+        self.assertEqual(first["mode"], "final")
+        # second write arrives later, continue from offset
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write("second\n")
+        second = launcher.read_log("sbx-log01", offset=first["offset"])
+        self.assertEqual(second["content"], "second\n")
+        # offset beyond eof clamps
+        tail = launcher.read_log("sbx-log01", offset=999)
+        self.assertEqual(tail["content"], "")
+        self.assertEqual(tail["offset"], len("first\nsecond\n"))
+
+    def test_read_log_empty_when_no_log(self):
+        result = self.launcher.read_log("sbx-unknown")
+        self.assertEqual(result["content"], "")
+        self.assertEqual(result["offset"], 0)
+        self.assertFalse(result["alive"])
+
 
 if __name__ == "__main__":
     unittest.main()

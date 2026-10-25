@@ -380,7 +380,7 @@ async function api(req, res, url) {
     event('info', '更新组织设置', `${settings.orgName} 已保存并发上限 ${settings.maxConcurrent}`, user.id);
     return json(res, 200, { settings });
   }
-  const match = pathname.match(/^\/api\/sandboxes\/(sbx-[\w-]+)\/(approve|reject|pause|resume|terminate|manifest|activity)$/);
+  const match = pathname.match(/^\/api\/sandboxes\/(sbx-[\w-]+)\/(approve|reject|pause|resume|terminate|manifest|activity|logs)$/);
   if (match) {
     const [, id, action] = match;
     if (['approve', 'reject'].includes(action) && user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
@@ -389,6 +389,10 @@ async function api(req, res, url) {
     if (!sandbox || !canAccess(user, sandbox)) return json(res, 404, { error: '未找到沙箱' });
     if (action === 'manifest' && req.method === 'GET') return json(res, 200, { manifest: compileManifest(sandbox) });
     if (action === 'activity' && req.method === 'GET') return json(res, 200, { events: securityEvents.filter((item) => String(item.detail || '').includes(sandbox.name)) });
+    if (action === 'logs' && req.method === 'GET') {
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return json(res, 200, launcher.readLog(id, Number.isNaN(offset) ? 0 : offset));
+    }
     if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
     let input = {};
     try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }

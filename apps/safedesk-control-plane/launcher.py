@@ -117,6 +117,30 @@ class Launcher:
     def is_alive(self, sandbox_id: str) -> bool:
         return bool(self.info(sandbox_id).get("alive"))
 
+    def read_log(self, sandbox_id: str, offset: int = 0, limit: int = 65536) -> dict:
+        """Incremental read of the sandbox process log (REQ-EX-011 real-time build output)."""
+        state = self.info(sandbox_id)
+        path = self.state_dir / f"{sandbox_id}.log"
+        size = path.stat().st_size if path.exists() else 0
+        seek = max(0, min(int(offset or 0), size))
+        content = ""
+        read_bytes = 0
+        if seek < size:
+            with open(path, "rb") as handle:
+                handle.seek(seek)
+                raw = handle.read(min(limit, size - seek))
+                read_bytes = len(raw)
+                content = raw.decode("utf-8", "replace")
+        return {
+            "content": content,
+            "offset": seek + read_bytes,
+            "size": size,
+            "alive": bool(state.get("alive")),
+            "pid": state.get("pid"),
+            "exitCode": state.get("exitCode"),
+            "mode": "live" if self._procs.get(sandbox_id) else "final",
+        }
+
     def pause(self, sandbox_id: str) -> bool:
         proc = self._procs.get(sandbox_id)
         if proc and proc.poll() is None:
